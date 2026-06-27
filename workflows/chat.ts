@@ -1,7 +1,12 @@
-import { convertToModelMessages, tool, type UIMessage, type UIMessageChunk } from "ai";
+import {
+  convertToModelMessages,
+  tool,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai";
 import { z } from "zod";
 import { DurableAgent } from "@workflow/ai/agent";
-import { getWritable } from "workflow";
+import { defineHook, getWritable } from "workflow";
 
 // --- Tool steps (durable; cached on replay, journaled per run) ---
 
@@ -21,7 +26,6 @@ async function getTimeStep(timezone: string) {
 
 async function getWeatherStep(city: string) {
   "use step";
-  // Open-Meteo: free, no API key
   const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1`;
   const geoRes = await fetch(geoUrl);
   if (!geoRes.ok) return { city, error: `Geocoding failed: ${geoRes.status}` };
@@ -51,7 +55,6 @@ async function getWeatherStep(city: string) {
 }
 
 function weatherCodeText(code: number): string {
-  // https://open-meteo.com/en/docs (WMO codes)
   if (code === 0) return "clear";
   if (code <= 3) return "partly cloudy";
   if (code <= 48) return "foggy";
@@ -100,8 +103,6 @@ async function fetchUrlStep(url: string) {
   }
 }
 
-// Wikipedia requires a User-Agent identifying the app + a contact URL or email
-// per https://meta.wikimedia.org/wiki/User-Agent_policy. Generic UAs get 403/429.
 const WIKI_UA =
   "workflow-agent-example/0.1 (https://github.com/ShadowWalker2014/workflow-agent-example)";
 
@@ -118,7 +119,6 @@ async function fetchWiki(url: string, attempt = 1): Promise<Response> {
 async function searchWikipediaStep(query: string) {
   "use step";
   try {
-    // Step 1: search for the page title
     const searchUrl =
       `https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json` +
       `&search=${encodeURIComponent(query)}`;
@@ -127,8 +127,6 @@ async function searchWikipediaStep(query: string) {
     const sJson = (await sRes.json()) as [string, string[], string[], string[]];
     if (!sJson[1]?.length) return { query, error: "No Wikipedia results" };
     const title = sJson[1][0];
-
-    // Step 2: fetch the summary
     const sumUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(
       title.replace(/ /g, "_"),
     )}`;
@@ -183,29 +181,44 @@ async function readNoteStep(id: number) {
   };
 }
 
+// --- Multi-turn session hook (canonical WDK chat-session-modeling pattern) ---
+// https://workflow-sdk.dev/docs/ai/chat-session-modeling
+//
+// The workflow body loops: agent.stream() to handle the current turn, then
+// `await chatMessageHook.create({ token: "chat:<id>" })` to suspend until the
+// next user message arrives via `chatMessageHook.resume(token, payload)`.
+
+export const chatMessageHook = defineHook({
+  schema: z.object({
+    message: z.unknown(),
+  }),
+});
+
 // --- Workflow ---
 
 export type ChatWorkflowInput = {
-  messages: UIMessage[];
+  chatId: string;
+  initialMessages: UIMessage[];
 };
 
 export async function chatWorkflow(input: ChatWorkflowInput) {
   "use workflow";
 
-  const modelMessages = await convertToModelMessages(input.messages);
+  const messages: UIMessage[] = [...input.initialMessages];
+  const hookToken = `chat:${input.chatId}`;
 
   const agent = new DurableAgent({
     model: "deepseek/deepseek-v4-pro",
     instructions: [
       "You are a helpful assistant with several real tools.",
       "Available tools:",
-      "- get_weather(city): real current weather via Open-Meteo (free, no key)",
-      "- get_time(timezone): current time in an IANA timezone (e.g. 'Europe/Paris')",
-      "- calculate(expression): evaluate a math expression (mathjs syntax — arithmetic, units, sin/sqrt/log)",
+      "- get_weather(city): real current weather via Open-Meteo",
+      "- get_time(timezone): current time in an IANA timezone",
+      "- calculate(expression): evaluate a math expression (mathjs syntax)",
       "- fetch_url(url): fetch text from a URL (first 8KB)",
-      "- search_wikipedia(query): look up the top Wikipedia article and return its summary",
+      "- search_wikipedia(query): top Wikipedia article + summary",
       "- save_note(title, body): persist a note to durable storage",
-      "- list_notes(): list saved notes (id, title, created)",
+      "- list_notes(): list saved notes",
       "- read_note(id): read a saved note's full body by id",
       "",
       "Call tools when relevant; otherwise answer directly.",
@@ -213,69 +226,67 @@ export async function chatWorkflow(input: ChatWorkflowInput) {
     ].join("\n"),
     tools: {
       get_weather: tool({
-        description:
-          "Get the current weather (temperature, wind, condition) for a city using Open-Meteo.",
-        inputSchema: z.object({
-          city: z.string().describe("City name, e.g. 'Tokyo' or 'San Francisco'"),
-        }),
+        description: "Get the current weather (temperature, wind, condition) for a city.",
+        inputSchema: z.object({ city: z.string() }),
         execute: async ({ city }) => await getWeatherStep(city),
       }),
       get_time: tool({
         description: "Get the current local time in an IANA timezone.",
-        inputSchema: z.object({
-          timezone: z.string().describe("IANA timezone, e.g. 'America/Los_Angeles'"),
-        }),
+        inputSchema: z.object({ timezone: z.string() }),
         execute: async ({ timezone }) => await getTimeStep(timezone),
       }),
       calculate: tool({
-        description:
-          "Evaluate a math expression. Supports arithmetic, units, and functions like sin/sqrt/log (mathjs syntax).",
-        inputSchema: z.object({
-          expression: z.string().describe("e.g. '(12.7 * 3 + 2^10) / 5'  or  '12 inch to cm'"),
-        }),
+        description: "Evaluate a math expression (mathjs syntax).",
+        inputSchema: z.object({ expression: z.string() }),
         execute: async ({ expression }) => await calculateStep(expression),
       }),
       fetch_url: tool({
-        description:
-          "Fetch text content from an http(s) URL. Returns up to the first 8KB of the response body.",
-        inputSchema: z.object({
-          url: z.string().describe("Full URL beginning with http:// or https://"),
-        }),
+        description: "Fetch text content from an http(s) URL (first 8KB).",
+        inputSchema: z.object({ url: z.string() }),
         execute: async ({ url }) => await fetchUrlStep(url),
       }),
       search_wikipedia: tool({
-        description: "Search Wikipedia and return the top article's summary + URL.",
-        inputSchema: z.object({
-          query: z.string().describe("e.g. 'Alan Turing' or 'pendulum clock'"),
-        }),
+        description: "Search Wikipedia and return the top article's summary.",
+        inputSchema: z.object({ query: z.string() }),
         execute: async ({ query }) => await searchWikipediaStep(query),
       }),
       save_note: tool({
-        description:
-          "Persist a note (title + body) to durable storage so it can be recalled later via list_notes / read_note.",
-        inputSchema: z.object({
-          title: z.string().describe("Short title for the note"),
-          body: z.string().describe("Note content"),
-        }),
+        description: "Persist a note (title + body) to durable storage.",
+        inputSchema: z.object({ title: z.string(), body: z.string() }),
         execute: async ({ title, body }) => await saveNoteStep(title, body),
       }),
       list_notes: tool({
-        description: "List all saved notes (id, title, created time). Use before read_note to find an id.",
+        description: "List all saved notes.",
         inputSchema: z.object({}),
         execute: async () => await listNotesStep(),
       }),
       read_note: tool({
         description: "Read a saved note's full body by id.",
-        inputSchema: z.object({
-          id: z.number().int().describe("Note id obtained from list_notes"),
-        }),
+        inputSchema: z.object({ id: z.number().int() }),
         execute: async ({ id }) => await readNoteStep(id),
       }),
     },
   });
 
-  await agent.stream({
-    messages: modelMessages,
-    writable: getWritable<UIMessageChunk>(),
-  });
+  while (true) {
+    const modelMessages = await convertToModelMessages(messages);
+
+    await agent.stream({
+      messages: modelMessages,
+      writable: getWritable<UIMessageChunk>(),
+      // Keep the writable open across turns so the SAME workflow can handle
+      // every message in this session. Each turn still emits its own
+      // start+finish chunks so useChat treats them as discrete messages.
+      preventClose: true,
+    });
+
+    // Suspend until the next user message arrives via resumeHook.
+    using hook = chatMessageHook.create({ token: hookToken });
+    const next = await hook;
+
+    const newMessage = next.message as UIMessage | undefined;
+    if (!newMessage || (newMessage as unknown) === "/done") break;
+
+    messages.push(newMessage);
+  }
 }

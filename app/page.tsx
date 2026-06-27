@@ -7,11 +7,26 @@ import type { UIMessage } from "ai";
 
 const CHAT_HISTORY_KEY = "chat-history";
 const ACTIVE_RUN_ID_KEY = "active-workflow-run-id";
+const SESSION_ID_KEY = "chat-session-id";
+
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") return "";
+  let id = window.localStorage.getItem(SESSION_ID_KEY);
+  if (!id) {
+    id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2);
+    window.localStorage.setItem(SESSION_ID_KEY, id);
+  }
+  return id;
+}
 
 export default function Page() {
   const [hydrated, setHydrated] = useState(false);
   const [initialMessages, setInitialMessages] = useState<UIMessage[]>([]);
   const [initialRunId, setInitialRunId] = useState<string | undefined>(undefined);
+  const [sessionId, setSessionId] = useState<string>("");
 
   useEffect(() => {
     try {
@@ -21,14 +36,16 @@ export default function Page() {
       // ignore parse errors
     }
     setInitialRunId(localStorage.getItem(ACTIVE_RUN_ID_KEY) ?? undefined);
+    setSessionId(getOrCreateSessionId());
     setHydrated(true);
   }, []);
 
-  if (!hydrated) return <div className="app" />;
+  if (!hydrated || !sessionId) return <div className="app" />;
 
   return (
     <Chat
       key={initialRunId ?? "fresh"}
+      sessionId={sessionId}
       initialMessages={initialMessages}
       initialRunId={initialRunId}
     />
@@ -36,9 +53,11 @@ export default function Page() {
 }
 
 function Chat({
+  sessionId,
   initialMessages,
   initialRunId,
 }: {
+  sessionId: string;
   initialMessages: UIMessage[];
   initialRunId: string | undefined;
 }) {
@@ -56,13 +75,12 @@ function Chat({
     () =>
       new WorkflowChatTransport({
         api: "/api/chat",
-        // Replay the workflow journal from chunk 0 on initial reconnect.
-        // (We trim the in-progress assistant message before mounting useChat
-        // so the replay rebuilds it cleanly. A "tail-only" resume via
-        // initialStartIndex: -N would need useChat to apply orphan text-deltas
-        // to existing parts, which it doesn't support on a fresh page mount —
-        // so we accept the redraw in exchange for correctness.)
         initialStartIndex: 0,
+        // Override the default body so we always send our stable sessionId.
+        // The server uses it to find or start the long-lived workflow run.
+        prepareSendMessagesRequest: ({ messages }) => ({
+          body: { chatId: sessionId, messages },
+        }),
         onChatSendMessage: (response, options) => {
           try {
             localStorage.setItem(
@@ -74,7 +92,9 @@ function Chat({
           if (runId) localStorage.setItem(ACTIVE_RUN_ID_KEY, runId);
         },
         onChatEnd: () => {
-          localStorage.removeItem(ACTIVE_RUN_ID_KEY);
+          // Do NOT clear the runId here. With the multi-turn pattern the same
+          // workflow keeps running across turns; clearing would force a new
+          // workflow on the very next send (losing the queued-hook benefit).
         },
         prepareReconnectToStreamRequest: () => {
           const runId = localStorage.getItem(ACTIVE_RUN_ID_KEY);
@@ -82,7 +102,7 @@ function Chat({
           return { api: `/api/chat/${encodeURIComponent(runId)}/stream` };
         },
       }),
-    [],
+    [sessionId],
   );
 
   const { messages, sendMessage, status, error } = useChat({
@@ -165,6 +185,7 @@ function Chat({
           onClick={() => {
             localStorage.removeItem(CHAT_HISTORY_KEY);
             localStorage.removeItem(ACTIVE_RUN_ID_KEY);
+            localStorage.removeItem(SESSION_ID_KEY);
             window.location.reload();
           }}
         >
