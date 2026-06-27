@@ -100,6 +100,17 @@ function Chat({
     }
   }, [messages]);
 
+  // If the chat errors (e.g. resume failed on a broken/expired run), clear
+  // the active runId so the next reload starts fresh instead of looping the
+  // same broken resume forever.
+  useEffect(() => {
+    if (error) {
+      try {
+        localStorage.removeItem(ACTIVE_RUN_ID_KEY);
+      } catch {}
+    }
+  }, [error]);
+
   const isStreaming = status === "submitted" || status === "streaming";
 
   return (

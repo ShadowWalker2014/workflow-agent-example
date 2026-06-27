@@ -100,6 +100,21 @@ async function fetchUrlStep(url: string) {
   }
 }
 
+// Wikipedia requires a User-Agent identifying the app + a contact URL or email
+// per https://meta.wikimedia.org/wiki/User-Agent_policy. Generic UAs get 403/429.
+const WIKI_UA =
+  "workflow-agent-example/0.1 (https://github.com/ShadowWalker2014/workflow-agent-example)";
+
+async function fetchWiki(url: string, attempt = 1): Promise<Response> {
+  const res = await fetch(url, { headers: { "User-Agent": WIKI_UA, "Api-User-Agent": WIKI_UA } });
+  if (res.status === 429 && attempt < 3) {
+    const retryAfter = Number(res.headers.get("retry-after") ?? "1");
+    await new Promise((r) => setTimeout(r, Math.max(1000, retryAfter * 1000)));
+    return fetchWiki(url, attempt + 1);
+  }
+  return res;
+}
+
 async function searchWikipediaStep(query: string) {
   "use step";
   try {
@@ -107,10 +122,8 @@ async function searchWikipediaStep(query: string) {
     const searchUrl =
       `https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json` +
       `&search=${encodeURIComponent(query)}`;
-    const sRes = await fetch(searchUrl, {
-      headers: { "User-Agent": "workflow-agent-example/0.1" },
-    });
-    if (!sRes.ok) return { query, error: `Search failed: ${sRes.status}` };
+    const sRes = await fetchWiki(searchUrl);
+    if (!sRes.ok) return { query, error: `Wikipedia search failed: ${sRes.status}` };
     const sJson = (await sRes.json()) as [string, string[], string[], string[]];
     if (!sJson[1]?.length) return { query, error: "No Wikipedia results" };
     const title = sJson[1][0];
@@ -119,10 +132,8 @@ async function searchWikipediaStep(query: string) {
     const sumUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(
       title.replace(/ /g, "_"),
     )}`;
-    const sumRes = await fetch(sumUrl, {
-      headers: { "User-Agent": "workflow-agent-example/0.1" },
-    });
-    if (!sumRes.ok) return { query, title, error: `Summary failed: ${sumRes.status}` };
+    const sumRes = await fetchWiki(sumUrl);
+    if (!sumRes.ok) return { query, title, error: `Wikipedia summary failed: ${sumRes.status}` };
     const sum = (await sumRes.json()) as {
       title: string;
       extract: string;
