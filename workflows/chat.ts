@@ -1,6 +1,7 @@
 import {
   convertToModelMessages,
   tool,
+  type ModelMessage,
   type UIMessage,
   type UIMessageChunk,
 } from "ai";
@@ -204,7 +205,13 @@ export type ChatWorkflowInput = {
 export async function chatWorkflow(input: ChatWorkflowInput) {
   "use workflow";
 
-  const messages: UIMessage[] = [...input.initialMessages];
+  // Keep the full conversation as ModelMessage[] (the shape DurableAgent.stream
+  // wants). Each turn we (a) hand the whole array to the agent, (b) append the
+  // assistant's response back via `messages.push(...result.messages.slice(...))`
+  // per the docs (https://workflow-sdk.dev/docs/ai/chat-session-modeling), and
+  // (c) suspend on the hook until the next user message arrives, convert it,
+  // and push it on for the next iteration.
+  const messages: ModelMessage[] = await convertToModelMessages(input.initialMessages);
   const hookToken = `chat:${input.chatId}`;
 
   const agent = new DurableAgent({
@@ -269,16 +276,21 @@ export async function chatWorkflow(input: ChatWorkflowInput) {
   });
 
   while (true) {
-    const modelMessages = await convertToModelMessages(messages);
-
-    await agent.stream({
-      messages: modelMessages,
+    const result = await agent.stream({
+      messages,
       writable: getWritable<UIMessageChunk>(),
-      // Keep the writable open across turns so the SAME workflow can handle
-      // every message in this session. Each turn still emits its own
-      // start+finish chunks so useChat treats them as discrete messages.
+      // Keep the writable open across turns so the SAME workflow handles every
+      // message in this session. Each turn still emits its own start+finish
+      // chunks (defaults) so useChat treats them as discrete messages.
       preventClose: true,
     });
+
+    // Append the agent's freshly produced assistant messages back into the
+    // conversation so the next turn has full memory of what was said.
+    // (https://workflow-sdk.dev/docs/ai/chat-session-modeling)
+    if (result.messages.length > messages.length) {
+      messages.push(...result.messages.slice(messages.length));
+    }
 
     // Suspend until the next user message arrives via resumeHook.
     using hook = chatMessageHook.create({ token: hookToken });
@@ -287,6 +299,7 @@ export async function chatWorkflow(input: ChatWorkflowInput) {
     const newMessage = next.message as UIMessage | undefined;
     if (!newMessage || (newMessage as unknown) === "/done") break;
 
-    messages.push(newMessage);
+    const newModelMessages = await convertToModelMessages([newMessage]);
+    messages.push(...newModelMessages);
   }
 }
