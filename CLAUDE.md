@@ -16,6 +16,7 @@ bun run wdk:setup     # creates workflow.* schema in pg-world
                       # NOTE: this is `bash -c 'set -a; source .env; set +a; …'`
                       # because the WDK CLI's dotenv only loads .env, and bun
                       # does NOT propagate .env into spawned node bins.
+bun run db:init       # creates app tables (notes)
 
 # dev
 bun run dev           # next dev on http://localhost:3010
@@ -88,7 +89,26 @@ These cost real time to debug. Every one of them comes from a failure mode hit d
 
 ## Tools
 
-Two are wired up: `get_weather(city)` and `get_time(timezone)`. Each tool's `execute` calls a `"use step"` async function (`getWeatherStep`, `getTimeStep`). To add a new tool: define the step function with `"use step"` as its first statement, wrap with `tool({ description, inputSchema: z.object({...}), execute })`, register under `tools: {…}` in `chatWorkflow`. Step functions can do IO; their results are journaled per call and cached on replay.
+Eight are wired up in [workflows/chat.ts](workflows/chat.ts). Each tool's `execute` calls a `"use step"` async function so its result is journaled per call and cached on replay.
+
+| Tool | Step does | Backed by |
+|---|---|---|
+| `get_weather(city)` | Open-Meteo geocoding → forecast | https://open-meteo.com (free, no key) |
+| `get_time(timezone)` | `Intl.DateTimeFormat` on an IANA tz | stdlib |
+| `calculate(expression)` | `mathjs.evaluate` | `mathjs` |
+| `fetch_url(url)` | `fetch()` with 8KB cap + UA header | any http(s) |
+| `search_wikipedia(query)` | `opensearch` → `page/summary` | en.wikipedia.org |
+| `save_note(title, body)` | INSERT into `notes` | local Postgres |
+| `list_notes()` | SELECT last 50 | local Postgres |
+| `read_note(id)` | SELECT by id | local Postgres |
+
+**Adding a tool:**
+1. Write the step: `async function fooStep(...) { "use step"; /* IO */ return {...}; }`. The `"use step"` directive MUST be the first statement of the function body, before any await/import.
+2. Wrap with `tool({ description, inputSchema: z.object({...}), execute })` and register under `tools: {...}` in `chatWorkflow`.
+3. Add a one-line entry to the `instructions` block of `DurableAgent` so the model knows it exists.
+4. For DB-backed steps, put the pg query in [lib/db.ts](lib/db.ts) and `await import("@/lib/db")` from inside the step.
+
+**Why steps for tools?** The agent's stream replay needs deterministic IO. Without `"use step"`, a tool's `fetch()` would re-run on every replay (re-billing, re-mutating). With it, the result is stored in `workflow_steps` and returned from cache.
 
 ## Sources of truth (consult before guessing)
 
@@ -123,6 +143,8 @@ ai@6.0.213
 @workflow/world-vercel@5.0.0-beta.21   ← pinned override; do not downgrade
 workflow@5.0.0-beta.19
 next@16.2.9
+mathjs@14.9.1
+pg@8.x
 node 22.x
 ```
 

@@ -8,6 +8,7 @@
     "start": "next start -p 3010",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
+    "db:init": "bun --env-file=.env scripts/init-db.ts",
     "wdk:setup": "bash -c 'set -a; source .env; set +a; workflow-postgres-setup'"
   },
   "dependencies": {
@@ -16,7 +17,9 @@
     "@workflow/ai": "5.0.0-beta.11",
     "@workflow/world-postgres": "5.0.0-beta.17",
     "ai": "^6.0.0-beta.128",
+    "mathjs": "^14.0.0",
     "next": "^16.0.0",
+    "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "workflow": "5.0.0-beta.19",
@@ -24,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "typescript": "^5.6.3"

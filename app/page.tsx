@@ -122,9 +122,12 @@ function Chat({
           <div>Say hello to start.</div>
           <div className="examples">
             Try:
-            <code>"weather in Tokyo?"</code>
-            <code>"what time is it in Paris?"</code>
-            <code>"tell me a joke"</code>
+            <code>"weather in Tokyo"</code>
+            <code>"who was Ada Lovelace?"</code>
+            <code>"calculate (2^10 + 17 * 3) / 5"</code>
+            <code>"save a note: gym at 7pm"</code>
+            <code>"what notes have I saved?"</code>
+            <code>"fetch https://example.com"</code>
           </div>
         </div>
       )}

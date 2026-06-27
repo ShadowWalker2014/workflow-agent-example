@@ -45,9 +45,20 @@ No auth, no Firebase, no Electric, no Redis. Just Postgres (one container) + Nex
 - **Server.** That GET looks up `chats.active_run_id` for the chat. If null → 204 (just render history). If set → `getRun(runId).getReadable({ startIndex })` — WDK replays journaled stream chunks + continues live.
 - **Survives server restart.** The workflow body and step results are persisted in the Postgres World by WDK after each `"use step"`. `instrumentation.ts` boots the world on Next start; the worker picks the in-flight run back up from the journal. The client's GET reattaches as normal.
 
-### Two tools, both durable steps
+### Eight tools, all durable steps
 
-`get_weather` and `get_time` are `"use step"` async functions. Their results are journaled, so on workflow replay (after a crash) they are returned from cache — no double-call to the external world.
+| Tool | What it does |
+|---|---|
+| `get_weather(city)` | Real current weather via [Open-Meteo](https://open-meteo.com) — geocodes the city then fetches temp/wind/condition |
+| `get_time(timezone)` | Current local time in an IANA timezone (`Intl.DateTimeFormat`) |
+| `calculate(expression)` | Evaluates a math expression with `mathjs` (arithmetic, units, sin/sqrt/log) |
+| `fetch_url(url)` | Fetches an http(s) URL and returns the first 8KB of body |
+| `search_wikipedia(query)` | Top-result lookup against the live Wikipedia REST API |
+| `save_note(title, body)` | Persists a note to the local Postgres `notes` table |
+| `list_notes()` | Lists the most recent 50 saved notes |
+| `read_note(id)` | Reads a saved note's full body by id |
+
+Every tool's `execute` calls a `"use step"` async function — so its result is journaled per call and returned from cache on workflow replay. No double-call to the external world after a server restart.
 
 ---
 
@@ -79,13 +90,13 @@ cp .env.example .env.local
 
 `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL` are already pointed at the local Docker Postgres.
 
-### 4. Initialize WDK world + chat tables
+### 4. Initialize WDK world + app tables
 
 ```bash
 # create WDK schema (workflow_runs, workflow_steps, workflow_run_events, …)
 bun run wdk:setup
 
-# create our app's chats + messages tables
+# create the app's `notes` table (used by the save_note/list_notes/read_note tools)
 bun run db:init
 ```
 
