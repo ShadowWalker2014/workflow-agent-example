@@ -133,6 +133,23 @@ grep -rE 'export.*\{.*getWorld' node_modules/@workflow/core/dist/runtime.js
 cat node_modules/@workflow/ai/dist/workflow-chat-transport.d.ts
 ```
 
+## The v7 / WorkflowAgent upgrade attempt (deferred)
+
+The current docs at https://workflow-sdk.dev recommend **`WorkflowAgent`** from `@ai-sdk/workflow` (which requires **`ai@7`**) over the deprecated `DurableAgent`. We attempted that upgrade and hit a pinned-incompatibility wall worth documenting so a future bump doesn't re-trip it:
+
+1. **`workflow@5.0.0-beta.25` (latest beta) hangs Next.js 16 Turbopack at boot.** Server emits `✓ Ready in 264ms`, prints `[workflow:build] Discovering workflow directives 72ms / Created step registrations 11ms`, then never serves a single HTTP request. Two clean restarts, 60s+ timeouts, no errors logged. Looks like a regression in `withWorkflow` between `5.0.0-beta.19` and `.25`.
+2. **`workflow@5.0.0-beta.19` (which boots) does NOT implement stream-as-step-argument serialization.** Per https://workflow-sdk.dev/docs/foundations/streaming streams are "serializable across the workflow ↔ step boundary" — but that's a `.25`-era feature. On `.19` you can call `getWritable()` in the workflow body but you cannot pass the resulting `WritableStream` to a `"use step"` function. The step sees nothing; the agent stream never reaches the LLM.
+3. **`WorkflowAgent` REQUIRES that stream-as-step-arg pattern** because `ai@7`'s `convertToModelMessages`, `tool({...})`, and the `WorkflowAgent` constructor all transitively import `node:async_hooks` — which is blocked inside the workflow body by the SWC plugin's "node-js-module-in-workflow" check. So all the AI SDK calls must live in a step file (we put them in `lib/chat-agent.ts`), and the writable must travel through. Which `.19` doesn't support.
+4. **`@workflow/world-postgres@5.0.0-beta.20` has a bootstrap bug** — migration `0004_remove_run_pause_status.sql` does `UPDATE workflow_runs WHERE status = 'paused'` even on a fresh DB where the post-0004 enum no longer contains `'paused'`. The `'status'` enum is in `public` schema, not `workflow`, so a `DROP SCHEMA workflow CASCADE` doesn't reset it; you must `DROP DATABASE; CREATE DATABASE` to recover.
+5. **`@workflow/world-vercel@5.0.0-beta.18` ships a broken nested `zod@4.3.6`** — its `union()` init throws `Cannot read properties of undefined (reading 'run')` at module load, and `@workflow/core/runtime/world.js` top-level imports it (so even using `world-postgres` crashes). Override to `5.0.0-beta.21` via `overrides` + `resolutions` in `package.json`. (We already do this.)
+
+**Verdict for the POC**: stay on the v6 / `DurableAgent` baseline (the canonical pattern when our pinned `workflow@5.0.0-beta.19` was current). Re-attempt v7 when:
+- `workflow@5.0.0-beta.>=26` ships a Turbopack-boot fix, **or**
+- `workflow@5.0.0-beta.19` backports stream-as-step-arg serialization, **or**
+- `@ai-sdk/workflow` ships a version that doesn't require those features.
+
+Bookmark: https://ai-sdk.dev/v7/docs/agents/workflow-agent (the WorkflowAgent target), https://workflow-sdk.dev/docs/foundations/streaming (the stream-arg primitive).
+
 ## Versions known to work
 
 ```
