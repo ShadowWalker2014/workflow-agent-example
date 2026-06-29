@@ -87,6 +87,8 @@ These cost real time to debug. Every one of them comes from a failure mode hit d
 
 11. **No `--no-verify`, no `git add -A`, no force-push.** Stage by name. POC, but standard hygiene.
 
+12. **`POST /api/chat` hangs forever, server `✓ Ready` but no requests served → wedged esbuild.** Repeated hard-kills of `next dev` leave orphan `esbuild --service=0.28.1 --ping` processes in kernel `UE` (uninterruptible exit) state. New `esbuild` execs against the same binary inode then hang too → the WDK builder/Turbopack pipeline never finishes → server appears alive but all routes block. `pkill esbuild` does NOT free them. Fix: `rm -rf node_modules/@esbuild node_modules/esbuild && bun install` to allocate a fresh binary inode. Symptom checklist: `ps -ef | grep esbuild | grep ping` shows multiple orphan processes from prior dev sessions.
+
 ## Tools
 
 Eight are wired up in [workflows/chat.ts](workflows/chat.ts). Each tool's `execute` calls a `"use step"` async function so its result is journaled per call and cached on replay.
